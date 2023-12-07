@@ -1,0 +1,51 @@
+#!/bin/bash
+
+# A function is created to update multiple target groups
+update_target_groups() {
+	# Get the task ECS task ARN
+	echo "Get the ECS task arn"
+	taskarn=$(aws ecs list-tasks --cluster $cluster_name --service-name $service_name --profile $profile \
+	    --region $region --query 'taskArns' --output text)
+
+	# Get the IP address of container
+	echo "Get the new ECS container IP address"
+	ipaddress=$(aws ecs describe-tasks --cluster $cluster_name --task $taskarn \
+	        --profile $profile --region $region --query 'tasks[*].attachments[*].details[?name==`privateIPv4Address`].value' --output text)
+
+	# Get the ALB ARN by Name
+	echo "Get the iLMS ALB arn"
+	elbv2_arn=$(aws elbv2 describe-load-balancers --name $alb_name --profile $profile --region $region --query 'LoadBalancers[*].LoadBalancerArn' --output text)
+
+	# Get the Target Group ARN
+	echo "Get the iLMS ALB target group arn"
+	tg_arn=$(aws elbv2 describe-target-groups --load-balancer-arn $elbv2_arn --profile $profile --region $region \
+		--query "TargetGroups[?TargetGroupName==\`${target_group_name}\`].TargetGroupArn" --output text)
+
+    # List the target ids & De-register the old targets
+    echo "Deregistration of target is started."
+    ids=($(aws elbv2 describe-target-health --target-group-arn $tg_arn \
+          --profile $profile --region $region --query 'TargetHealthDescriptions[*].Target.Id' --output text | tr '\t' ' '))
+
+    for id in ${ids[@]}; do
+	    aws elbv2 deregister-targets --target-group-arn $tg_arn --targets Id=${id},AvailabilityZone='all' --profile $profile --region $region
+    done
+    echo "Deregistration of target is completed."
+
+	# Register a new target
+	echo "Registration of new target is started."
+	aws elbv2 register-targets --target-group-arn $tg_arn --targets Id=${ipaddress},AvailabilityZone='all' --profile $profile --region $region
+	echo "Registration of new target is completed."
+}
+
+if [ -z "$6" ]; then
+  echo "ERROR: Provide six arguments to script on command line. Example: sh register_target.sh <cluster name> <service name> <aws profile> <aws region> <alb name> <target group name>"
+  exit 1
+fi
+
+cluster_name=$1
+service_name=$2
+profile=$3
+region=$4
+alb_name=$5
+target_group_name=$6
+update_target_groups $cluster_name $service_name $profile $region $alb_name $target_group_name
